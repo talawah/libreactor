@@ -9,6 +9,7 @@
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <sys/epoll.h>
+#include <linux/filter.h>
 
 #include <dynamic.h>
 
@@ -49,6 +50,8 @@ static reactor_status reactor_net_resolver_handler(reactor_event *event)
   reactor_net *net = event->state;
   struct addrinfo *ai = (struct addrinfo *) event->data;
   int e, fileno;
+  struct sock_filter code[] = {{ BPF_LD  | BPF_W | BPF_ABS, 0, 0, SKF_AD_OFF + SKF_AD_CPU },
+                               { BPF_RET | BPF_A, 0, 0, 0 }};
 
   net->resolver_job = 0;
 
@@ -74,6 +77,18 @@ static reactor_status reactor_net_resolver_handler(reactor_event *event)
 
       e = listen(fileno, INT_MAX);
       reactor_assert_int_not_equal(e, -1);
+
+      if (net->options & REACTOR_NET_OPTION_BPF)
+        {
+          e = setsockopt(fileno, SOL_SOCKET, SO_ATTACH_REUSEPORT_CBPF,
+                         (struct sock_fprog[]) {{.len = 2, .filter = code}}, sizeof (struct sock_fprog));
+          if (e == 1)
+            {
+              (void) close(fileno);
+              return reactor_net_error(net, "error loading reuseport filter");
+            }
+        }
+
       reactor_fd_open(&net->fd, fileno, EPOLLIN | EPOLLET);
     }
   else
